@@ -20,6 +20,7 @@ proc OpenSeesComposite::wfSection { secID nf1 nf2 d tw bf tf args} {
   #    - "-Elastic $matTag $Es" = utilizes an elastic material
   #    - "-ElasticPP $startMatTag $Es $Fy" = utilizes an elastically perfectly plastic (ElasticPP) material with residual stress pattern defined later
   #    - "-Steel02 $startMatTag $Es $Fy $b" = utilizes an Steel02 material with residual stress pattern defined later
+  #    - "-Hardening $startMatTag $Es $Fy $b" = utilizes multiSurfaceKinematicHardening material with residual stress pattern defined later
   #    - "-ShenSteel $startMatTag $Es $Fy $Fu $eu $units" = utilizes an ShenSteel01 material with residual stress pattern defined later
   #    - "-ShenSteelDegrade $startMatTag $Es $Fy $Fu $eu $units" = utilizes an ShenSteel01 material with residual stress pattern defined later
   # resStress - define the residual stress patten
@@ -99,6 +100,14 @@ proc OpenSeesComposite::wfSection { secID nf1 nf2 d tw bf tf args} {
       set materialParams [lrange $args [expr $i+2] [expr $i+3]]
       set Es             [lindex $args [expr $i+2]]
       incr i 3
+      continue
+    }
+    if { $param == "-Hardening" } {
+      set materialType   Hardening
+      set currentMatTag  [lindex $args [expr $i+1]]
+      set materialParams [lrange $args [expr $i+2] [expr $i+4]]
+      set Es             [lindex $args [expr $i+2]]
+      incr i 4
       continue
     }
     if { $param == "-Steel02" } {
@@ -216,7 +225,10 @@ proc OpenSeesComposite::wfSection { secID nf1 nf2 d tw bf tf args} {
     lappend materialParams $elb
   }
 
-
+  if { $residualStressType == "null" && $materialType != "matTag" } {
+    eval defineUniaxialMaterialWithResidualStress $currentMatTag 0.0 $materialType $materialParams
+    set materialType matTag
+  }
 
     if { $materialType == "matTag" } {
         set matTag $currentMatTag
@@ -225,16 +237,45 @@ proc OpenSeesComposite::wfSection { secID nf1 nf2 d tw bf tf args} {
             patchRect2d $matTag [expr ceil(($nf1/$d)*$tf)]         $bf  $d1  $d2
             patchRect2d $matTag [expr ceil(($nf1/$d)*($d-2*$tf))]  $tw -$d1  $d1
             patchRect2d $matTag [expr ceil(($nf1/$d)*$tf)]         $bf -$d2 -$d1
+            # Fillets
+            if { $k > $tf } {
+              set r [expr $k-$tf]
+              set pi  [expr 2*asin(1.0)]
+              set Afillet [expr (1-0.25*$pi)*$r*$r]
+              set Yfillet [expr 2/(12-3*$pi)*$r]
+              fiber [expr  $d1-$Yfillet] 0.0 [expr 2*$Afillet] $matTag
+              fiber [expr -$d1+$Yfillet] 0.0 [expr 2*$Afillet] $matTag
+            }
         # ########### Define Fibers: 2d Weak ###########
         } elseif { $bendingType == "2dWeak" } {
             patchRect2d $matTag [expr ceil(($nf1/$bf)*($bf-$tw)/2)]   [expr 2*$tf]  $b1  $b2
             patchRect2d $matTag [expr ceil(($nf1/$bf)*$tw)]          $d           -$b1  $b1
             patchRect2d $matTag [expr ceil(($nf1/$bf)*($bf-$tw)/2)]   [expr 2*$tf] -$b2 -$b1
+            # Fillets
+            if { $k > $tf } {
+              set r [expr $k-$tf]
+              set pi  [expr 2*asin(1.0)]
+              set Afillet [expr (1-0.25*$pi)*$r*$r]
+              set Yfillet [expr 2/(12-3*$pi)*$r]
+              fiber [expr  $b1+$Yfillet] 0.0 [expr 2*$Afillet] $matTag
+              fiber [expr -$b1-$Yfillet] 0.0 [expr 2*$Afillet] $matTag
+            }
         # ########### Define Fibers: 3d ###########
         } elseif { $bendingType == "3d" } {
             patch quad $matTag [expr int(ceil(($nf1/$d)*$tf))]       [expr int(ceil(($nf2/$bf)*$bf))]  $d1 -$b2  $d2 -$b2  $d2  $b2  $d1  $b2
             patch quad $matTag [expr int(ceil(($nf1/$d)*($d-2*$tf)))] [expr int(ceil(($nf2/$bf)*$tw))] -$d1 -$b1  $d1 -$b1  $d1  $b1 -$d1  $b1
             patch quad $matTag [expr int(ceil(($nf1/$d)*$tf))]       [expr int(ceil(($nf2/$bf)*$bf))] -$d2 -$b2 -$d1 -$b2 -$d1  $b2 -$d2  $b2
+            # Fillets
+            if { $k > $tf } {
+              set r [expr $k-$tf]
+              set pi  [expr 2*asin(1.0)]
+              set Afillet [expr (1-0.25*$pi)*$r*$r]
+              set Yfillet [expr 2/(12-3*$pi)*$r]
+              fiber [expr  $d1-($r-$Yfillet)] [expr  $b1+($r-$Yfillet)] $Afillet $matTag
+              fiber [expr -$d1+($r-$Yfillet)] [expr  $b1+($r-$Yfillet)] $Afillet $matTag
+              fiber [expr  $d1-($r-$Yfillet)] [expr -$b1-($r-$Yfillet)] $Afillet $matTag
+              fiber [expr -$d1+($r-$Yfillet)] [expr -$b1-($r-$Yfillet)] $Afillet $matTag
+            }
         } else {
             error "Error - wfSection: unknown bendingAxis"
         }
@@ -249,7 +290,14 @@ proc OpenSeesComposite::wfSection { secID nf1 nf2 d tw bf tf args} {
               error "Error - wfSection: the compressive residual stress (frc) should be negative"
             }
 
-            set frt [expr -1*$frc*($bf*$tf)/($bf*$tf+$tw*$dw)]
+            if { $k > $tf } {
+              set r [expr $k-$tf]
+              set pi  [expr 2*asin(1.0)]
+              set Afillet [expr (1-0.25*$pi)*$r*$r]
+              set frt [expr -1*$frc*($bf*$tf)/($bf*$tf+$tw*$dw+4*$Afillet)]
+            } else {
+              set frt [expr -1*$frc*($bf*$tf)/($bf*$tf+$tw*$dw)]
+            }
 
             set LehighStartMatTag $currentMatTag
 
@@ -390,6 +438,12 @@ proc OpenSeesComposite::defineUniaxialMaterialWithResidualStress {matID fr mater
       set Es [expr double([lindex $args 0])]
       set Fy [expr double([lindex $args 1])]
       uniaxialMaterial multiSurfaceKinematicHardening $matID -initialStress $fr -Direct $Es 0.0 $Fy [expr $Es/1000.0]
+    }
+    Hardening {
+      set Es [expr double([lindex $args 0])]
+      set Fy [expr double([lindex $args 1])]
+      set b  [expr double([lindex $args 2])]
+      uniaxialMaterial multiSurfaceKinematicHardening $matID -initialStress $fr -Direct $Es 0.0 $Fy [expr $b*$Es]
     }
     Steel02 {
       set Es [expr double([lindex $args 0])]
